@@ -8,10 +8,13 @@ reference) and `recovery/` (the extraction scripts).
 
 ## 1. What this is
 
-A **Glamax Bulb TW+RGB** (a white-labelled Tuya RGBWW bulb). Its WiFi firmware is
-buggy — it refuses to join any new WiFi network — so the usual LAN/cloud control
-is dead. The only live channel is **Bluetooth LE**, and the vendor app for that is
-miserable. So we talk to the bulb's BLE protocol directly.
+A **Glamax Bulb TW+RGB** (a white-labelled Tuya RGBWW bulb). For a long time it would
+not join the new home WiFi, so everything below was built on **Bluetooth LE**, talking
+the bulb's BLE protocol directly because the vendor app for it is miserable.
+
+**Update, 2026-11-11:** the bulb is now on the home WiFi and the Pi web app controls it
+over the LAN (`server.py`, Tuya LAN protocol 3.5 via `tinytuya`, `local_key` only). Why it
+finally joined is unknown. Bluetooth (`bulb.py`, the Mac app) still works as the fallback.
 
 Result: `bulb.py` controls it from any machine with Bluetooth (Mac proven; the
 `hermes` Pi set up as an always-on bridge).

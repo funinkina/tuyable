@@ -21,6 +21,10 @@ OP_INFO, OP_PAIR, OP_STATUS, OP_DPS, OP_REPORT = 0x00, 0x01, 0x03, 0x27, 0x8006
 BOOL, VALUE, STRING, ENUM = 1, 2, 3, 4
 
 
+class BulbError(Exception):
+    pass
+
+
 def crc16(data):
     crc = 0xFFFF
     for b in data:
@@ -99,7 +103,7 @@ def parse_dps(payload):
 class Bulb:
     def __init__(self, cred=None):
         self.cred, self.serial, self.dp_seq = cred, 1, 1
-        self.keys, self.state = {}, {}
+        self.keys, self.state, self.rssi = {}, {}, None
         self.buf, self.want, self.inbox = b"", 0, asyncio.Queue()
         if cred:
             self._lk = cred["local_key"].encode()
@@ -107,10 +111,13 @@ class Bulb:
             self.keys[14] = hashlib.md5(self._lk + self._sk).digest()  # md5(localKey+secKey)
 
     async def __aenter__(self):
-        dev = await BleakScanner.find_device_by_filter(
-            lambda d, ad: SERVICE in ad.service_uuids, timeout=15)
+        def match(_, ad):
+            if SERVICE in ad.service_uuids:
+                self.rssi = ad.rssi  # signal at discovery, for diagnostics
+                return True
+        dev = await BleakScanner.find_device_by_filter(match, timeout=15)
         if not dev:
-            sys.exit("Bulb not found. Powered on? Phone app closed?")
+            raise BulbError("Bulb not found. Powered on? Phone app closed?")
         self.client = BleakClient(dev, timeout=20)
         await self.client.connect()
         await self.client.start_notify(NOTIFY, self._notify)
@@ -176,14 +183,14 @@ class Bulb:
             payload += struct.pack(">BBH", dp, kind, len(raw)) + raw
         r = await self.request(OP_DPS, payload, 15)
         if r[-1] != 0:
-            sys.exit(f"Bulb rejected command (status {r[-1]})")
+            raise BulbError(f"Bulb rejected command (status {r[-1]})")
 
 
 def load_cred():
     try:
         devs = json.loads(CONFIG.read_text())
     except FileNotFoundError:
-        sys.exit(f"No credentials at {CONFIG}. Run fetch_keys.py first.")
+        raise BulbError(f"No credentials at {CONFIG}. Run fetch_keys.py first.")
     # ponytail: picks the single light; add a name arg when there's a second bulb
     lights = [d for d in devs if d["category"] == "dj"] or devs
     return lights[0]
@@ -244,4 +251,7 @@ def selftest():
 
 
 if __name__ == "__main__":
-    selftest() if sys.argv[1:] == ["selftest"] else asyncio.run(main(sys.argv[1:]))
+    try:
+        selftest() if sys.argv[1:] == ["selftest"] else asyncio.run(main(sys.argv[1:]))
+    except BulbError as e:
+        sys.exit(str(e))

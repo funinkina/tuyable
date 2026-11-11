@@ -1,12 +1,15 @@
 # tuyable
 
-App-free, cloud-free control of a Tuya BLE bulb (Glamax TW+RGB, service `0xFD50`,
-protocol 4.8) whose WiFi firmware is broken. It talks the encrypted Tuya BLE session
-directly. Two clients share the same credentials:
+App-free, cloud-free control of a Tuya bulb (Glamax TW+RGB). The bulb is reachable two
+ways: over the home WiFi (Tuya LAN protocol 3.5, needs only `local_key`) and over
+Bluetooth (service `0xFD50`, protocol 4.8, needs `local_key` + `sec_key`). Three clients
+share the same credentials:
 
 - **Tuyable.app**: a macOS menu-bar app (Swift, CoreBluetooth). It handles power, white
   temperature, colour wheel, brightness and presets.
-- **`bulb.py`**: a CLI for scripts, cron, and the Raspberry Pi bridge.
+- **Phone web app**: an installable web app served by the Pi (`server.py` + `web/`), so anyone on
+  the home WiFi can control the lamp. It controls the bulb over WiFi.
+- **`bulb.py`**: a Bluetooth CLI for scripts and cron.
 
 See [HANDOVER.md](HANDOVER.md) for how the protocol was reverse-engineered.
 
@@ -29,9 +32,51 @@ build/Tuyable.app/Contents/MacOS/Tuyable --status     # live: connect, print sta
   macOS 27 SDK turned SwiftUI's `@State` into a macro whose plugin ships only with
   Xcode.
 
-## CLI
+## Phone web app (on the Pi)
 
-## Daily use
+Open **http://192.168.1.20:8080** on any phone on the home WiFi, then use the browser menu's
+**Add to Home screen**. It has power, white/colour modes, brightness and temperature
+sliders, presets, colour swatches and a custom colour picker.
+
+```sh
+# deploy / update from this repo
+rsync -a server.py lamp tuyable.service web hermes:tuyable/
+ssh hermes 'cp ~/tuyable/tuyable.service ~/.config/systemd/user/ && systemctl --user daemon-reload \
+            && systemctl --user enable --now tuyable && systemctl --user restart tuyable'
+ssh hermes 'tail -f ~/tuyable/server.log'   # lamp found at <ip>, errors
+uv run server.py selftest                    # request validation checks
+```
+
+- The server talks to the bulb over the LAN with `tinytuya` and is the single source of truth
+  for the lamp's state. One thread owns one session to the bulb: it sends every write and
+  listens to everything the bulb reports, including changes made in Smart Life. Web pages
+  and the `lamp` command read the server's copy; pages get changes pushed (`/api/events`).
+- Writes from several clients are merged, latest value wins, and paced to the bulb's speed.
+  A written value stands until the bulb confirms it.
+- It finds the bulb by device id from its broadcasts, so a new IP from the router is fine,
+  and it reconnects by itself (every 15 s while the bulb is unreachable).
+- The Connection panel shows the bulb's address, response time and last error; **Find lamp
+  again** repeats the lookup.
+- The bulb must be on the home WiFi. If it drops off, the Bluetooth clients still work.
+- The API is open to anyone on the LAN, by design: anyone in the house can use it.
+- Over plain `http://`, Android adds a home-screen shortcut rather than a full standalone
+  app. A true PWA install, with no browser bar and offline shell, needs HTTPS.
+
+### Shell command on the Pi
+
+`~/tuyable/lamp` drives the same server from a shell, for scripts, cron and the Hermes
+agent. It prints the resulting state on one line and exits 1 with the reason on failure.
+
+```sh
+~/tuyable/lamp status
+~/tuyable/lamp on | off | toggle
+~/tuyable/lamp white 60 20      # brightness %, temp % (0=warm 100=cool)
+~/tuyable/lamp color ff8800 80  # hex RGB, brightness %
+~/tuyable/lamp bright 30        # keeps the current mode and colour
+```
+
+## Bluetooth CLI
+
 
 ```sh
 uv run bulb.py on

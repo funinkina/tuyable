@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Control the lamp from a shell, through the web app's API on this machine.
+
+usage: lamp status
+       lamp on | off | toggle
+       lamp white BRIGHT% [TEMP%]     TEMP: 0=warm, 100=cool (kept if omitted)
+       lamp color RRGGBB [BRIGHT%]    brightness kept if omitted
+       lamp bright BRIGHT%            keeps the current mode and colour
+
+Prints the resulting state on one line; exits 1 with the reason if the lamp can't be reached.
+LAMP_URL overrides the server address (default http://localhost:8080).
+"""
+import colorsys, json, os, sys, urllib.error, urllib.request
+
+URL = os.environ.get("LAMP_URL", "http://localhost:8080")
+
+
+def api(path, body=None):
+    req = urllib.request.Request(URL + path, json.dumps(body).encode() if body is not None else None,
+                                 {"content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=45) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        if e.code == 503:  # server reached, lamp not: body is the state with the reason
+            return json.load(e)
+        sys.exit(f"error: lamp server rejected the command ({e.code})")
+    except OSError as e:
+        sys.exit(f"error: can't reach the lamp server at {URL} ({e})")
+
+
+def hs(hexrgb):
+    r, g, b = (int(hexrgb.lstrip("#")[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    h, s, _ = colorsys.rgb_to_hsv(r, g, b)
+    return round(h * 360) % 360, round(s * 100)
+
+
+def command(args, cur):
+    """Request body for /api/set. cur is called for the current state only when needed."""
+    cmd, a = args[0], [x.rstrip("%") for x in args[1:]]
+    if cmd in ("on", "off"):
+        return {"on": cmd == "on"}
+    if cmd == "toggle":
+        return {"on": not cur()["on"]}
+    if cmd == "white":
+        return {"mode": "white", "b": int(a[0]), "t": int(a[1]) if len(a) > 1 else cur()["temp"]}
+    if cmd == "color":
+        h, s = hs(a[0])
+        return {"mode": "color", "h": h, "s": s, "v": int(a[1]) if len(a) > 1 else cur()["v"]}
+    if cmd == "bright":
+        c = cur()
+        return ({"mode": "color", "h": c["h"], "s": c["s"], "v": int(a[0])} if c["color"]
+                else {"mode": "white", "b": int(a[0]), "t": c["temp"]})
+    raise ValueError(cmd)
+
+
+def describe(s):
+    if not s["on"]:
+        return "off"
+    if s["color"]:
+        rgb = colorsys.hsv_to_rgb(s["h"] / 360, s["s"] / 100, 1)
+        return f"on, colour #{''.join(f'{round(x * 255):02x}' for x in rgb)}, brightness {s['v']}%"
+    return f"on, white, brightness {s['white']}%, temperature {s['temp']}% (0=warm, 100=cool)"
+
+
+def main(args):
+    fresh = lambda: api("/api/state?fresh=1")
+    if args in ([], ["status"]):
+        s = fresh()
+    else:
+        try:
+            body = command(args, fresh)
+        except (ValueError, IndexError):
+            sys.exit(__doc__)
+        s = api("/api/set", body)
+    if s["error"]:
+        sys.exit(f"error: {s['error']}")
+    print(describe(s))
+
+
+def selftest():
+    cur = lambda: {"on": True, "color": True, "h": 200, "s": 90, "v": 70, "white": 40, "temp": 15}
+    assert command(["off"], None) == {"on": False} and command(["toggle"], cur) == {"on": False}
+    assert command(["white", "60%"], cur) == {"mode": "white", "b": 60, "t": 15}
+    assert command(["color", "#ff8800", "80"], None) == {"mode": "color", "h": 32, "s": 100, "v": 80}
+    assert command(["bright", "30"], cur) == {"mode": "color", "h": 200, "s": 90, "v": 30}
+    assert hs("ffffff") == (0, 0) and hs("0000ff") == (240, 100)
+    assert describe({**cur(), "h": 0, "s": 100}) == "on, colour #ff0000, brightness 70%"
+    for bad in (["disco"], ["white"], ["color", "zz"], ["bright", "x"]):
+        try:
+            command(bad, cur)
+        except (ValueError, IndexError):
+            continue
+        raise AssertionError(bad)
+    print("selftest ok")
+
+
+if __name__ == "__main__":
+    selftest() if sys.argv[1:] == ["selftest"] else main(sys.argv[1:])
